@@ -1,0 +1,1 @@
+echo 100 - $(smartctl -x /dev/sdw | grep "Percentage Used Endurance Indicator" | awk {' print $4 '} | cut -d "~" -f1) | bc
