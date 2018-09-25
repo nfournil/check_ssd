@@ -31,7 +31,7 @@
 
 VERSION="1.5"
 
-STORCLI="/usr/bin/storcli"
+STORCLI="/sbin/storcli"
 TWARE="/usr/bin/tw_cli"
 BC="/usr/bin/bc"
 SMARTCTL="/usr/sbin/smartctl"
@@ -147,11 +147,16 @@ function getDIDlist {
       if [ $DEBUG -eq 1 ]; then echo "LSI/AVAGO controller detected"; fi;
       DRIVER="megaraid"
       ITERATE=0
-      for c in `storcli show | egrep "^  [0-9]" | awk '{ print $1 }'`; do
+      for c in `$STORCLI show | egrep "^  [0-9]" | awk '{ print $1 }'`; do
         CONTROLLERS[$ITERATE]=$c
-#        BLOCKDEVICE[$ITERATE]=`$LSBLK -d -S -n --output HCTL,NAME | sed "s/:/ /g" | awk '{ print \$1 " " \$5 }' | grep ^$c | tail --lines 1 | awk '{ print "/dev/" $2 }'`
-        BLOCKDEVICE[$ITERATE]=`lsscsi | sed "s/\[//g; s/\]//g" | awk '{ print $1 " " $6 }' | sed "s/:/ /g" | awk '{ print \$1 " " \$5 }' | grep ^$c | tail --lines 1 | awk '{ print $2 }'`
-        DIDLIST[$ITERATE]=`$STORCLI /c$ITERATE show | grep SSD | awk '{ print $2 }'`
+	# Controller is found : get VDs on this controller
+	N_VD=$(storcli /c0 show all | grep 'Virtual Drives = ' | sed s:'.*= '::)
+	for VD in $(${STORCLI} /c0 show all | grep DG/VD -A $(($N_VD+2)) | grep '^[0-9]' | sed s:[0-9]*/::); do
+		BLOCKDEVICE[$ITERATE]=$(${STORCLI} /c0 /v0 show all | grep 'OS Drive Name' | sed s:'OS Drive Name = '::)
+	done
+	#        BLOCKDEVICE[$ITERATE]=`$LSBLK -d -S -n --output HCTL,NAME | sed "s/:/ /g" | awk '{ print \$1 " " \$5 }' | grep ^$c | tail --lines 1 | awk '{ print "/dev/" $2 }'`
+	#        BLOCKDEVICE[$ITERATE]=`lsscsi | sed "s/\[//g; s/\]//g" | awk '{ print $1 " " $6 }' | sed "s/:/ /g" | awk '{ print \$1 " " \$5 }' | grep ^$c | tail --lines 1 | awk '{ print $2 }'`
+        DIDLIST[$ITERATE]=`${STORCLI} /c$ITERATE show | grep SSD | awk '{ print $2 }'`
         if [ $DEBUG -eq 1 ]; then echo "Found controller #${CONTROLLERS[$ITERATE]} with associated blockdevice ${BLOCKDEVICE[$ITERATE]}"; fi;
 
         ITERATE=$((ITERATE + 1))
@@ -211,38 +216,42 @@ function checkDID () {
       if [ $DEBUG -eq 1 ]; then echo "Checking DID number $d on controller $1 with driver $DRIVER"; fi
       if [ "$DRIVER" = "auto" ]; then
         if [[ $d =~ ^/dev/nvme.* ]]; then
-                VALUE=`echo \`$NVMECLI smart-log-add $d | grep "^wear_leveling" | tr -d '%' | awk '{ print $3 }'\` + 0 | bc`
+                VALUE=$(${NVMECLI} smart-log $d | grep "available_spare " | tr -d '%' | awk '{ print $3 }')
         else
                 VALUE=`echo \`$SMARTCTL -A -d auto $d | grep "^177\|^233" | awk '{ print $4 }'\` + 0 | bc`  
         fi
       else
         VALUE=`echo \`$SMARTCTL -A -d $DRIVER,$d ${BLOCKDEVICE[$1]} | grep "^177\|^233" | awk '{ print $4 }'\` + 0 | bc`  
       fi
-      case $VALUE in
-      100)
-        MESSAGE+="Drive $d on $1 WLC/MWI $VALUE. "
-        ;;
-      [4-9][0-9])
-        MESSAGE+="Drive $d on $1 WLC/MWI $VALUE. "
-        ;;
-      [2-3][0-9])
-        MESSAGE+="Drive $d on $1 MEDIUM WLC/MWI ($VALUE). "
-        if [ "$EXITCODE" -eq "0" ]; then     
-          EXITCODE=1
-          PREFIX="SSD WARNING"
-        fi
-        ;;
-      [0-1]*)
-        MESSAGE+="Drive $d on $1 CRITICAL WLC/MWI ($VALUE). "  
-        EXITCODE=2  
-        PREFIX="SSD CRITICAL"
-        ;;
-      *)
-        MESSAGE="Unknown error occured."
-        EXITCODE=4
-        PREFIX="SSD UNKNOWN"
-      ;;
-      esac
+	if [ $VALUE -gt 40 ]
+	then
+		MESSAGE+="Drive $d on $1 WLC/MWI $VALUE. "
+	fi
+	if [ $VALUE -ge 40 ] && [ $VALUE -le 20 ]
+	then
+	        MESSAGE+="Drive $d on $1 MEDIUM WLC/MWI ($VALUE). "
+		if [ "$EXITCODE" -eq "0" ]; then     
+	          EXITCODE=1
+	          PREFIX="SSD WARNING"
+	        fi
+	fi
+	if [ $VALUE -lt 20 ]
+	then
+	        MESSAGE+="Drive $d on $1 CRITICAL WLC/MWI ($VALUE). "
+	        EXITCODE=2
+	        PREFIX="SSD CRITICAL"
+	        
+	fi
+		
+ 
+     	if [ $VALUE -gt 100 ]
+	then 
+	        MESSAGE="Unknown error occured."
+	        EXITCODE=4
+	        MESSAGE+="Drive $d on $1 CRITICAL WLC/MWI ($VALUE). "
+	        EXITCODE=2
+	        PREFIX="SSD CRITICAL"
+	fi
   done
 }
 
